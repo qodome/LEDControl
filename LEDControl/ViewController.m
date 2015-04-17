@@ -26,9 +26,20 @@
 @property (weak, nonatomic) IBOutlet UITextField *sampleColor2;
 @property (weak, nonatomic) IBOutlet UITextField *sampleColor3;
 @property (weak, nonatomic) IBOutlet UITextField *sampleColor4;
+@property (weak, nonatomic) IBOutlet UITextField *ssid;
+@property (weak, nonatomic) IBOutlet UITextField *password;
+@property (weak, nonatomic) IBOutlet UITextField *wifiStatus;
+@property (weak, nonatomic) IBOutlet UITextField *peerStatus;
 @property (nonatomic) UInt8 initDone;
+@property (nonatomic) NSString *ssidStr;
+@property (nonatomic) NSString *passwordStr;
+@property (nonatomic) int setWIFI;
+
+@property (strong, nonatomic) NSThread *workingThread;
+@property (nonatomic) int iQoConnected;
 
 - (void)sendUpdate:(UInt8)r G:(UInt8)g B:(UInt8)b W:(UInt8)w;
+- (void)doTask;
 
 @end
 
@@ -40,7 +51,6 @@
     
     [super viewDidLoad];
     // Do any additional setup after loading the view, typically from a nib.
-    NSLog(@"create central");
     self.central = [[CBCentralManager alloc] initWithDelegate:self queue:nil options:nil];
     self.p = nil;
     
@@ -79,13 +89,12 @@
         rgba[3][2] = b[2];
     }
 
-    /*
-    if ([defaults objectForKey:@"0B.bin"] != nil) {
-        [defaults removeObjectForKey:@"0B.bin"];
-        [defaults synchronize];
-    }
-     */
     self.initDone = 0x55;
+    self.iQoConnected = 0;
+    self.setWIFI = 0;
+    
+    self.workingThread = [[NSThread alloc] initWithTarget:self selector:@selector(doTask) object:nil];
+    [self.workingThread start];
 }
 
 - (void)viewWillAppear:(BOOL)animated {
@@ -95,6 +104,43 @@
 - (void)didReceiveMemoryWarning {
     [super didReceiveMemoryWarning];
     // Dispose of any resources that can be recreated.
+}
+
+-(void)doTask
+{
+    int tickCount = 0;
+    uint8_t cmd[1];
+    
+    while (1) {
+        sleep(1);
+        if (self.iQoConnected == 1) {
+            if (tickCount == 0) {
+                [BLEUtility readCharacteristic:self.p sUUID:@"90D0" cUUID:@"9004"];
+            } else if (tickCount == 1) {
+                [BLEUtility readCharacteristic:self.p sUUID:@"90D0" cUUID:@"9005"];
+            }
+            tickCount++;
+            if (tickCount >= 2) {
+                tickCount = 0;
+            }
+            if (self.setWIFI == 1) {
+                self.setWIFI = 0;
+                cmd[0] = 0x02;
+                NSData *cmdData = [NSData dataWithBytes:cmd length:1];
+                NSMutableData *completeData = [cmdData mutableCopy];
+                [completeData appendData:[self.ssidStr dataUsingEncoding:NSUTF8StringEncoding]];
+                [BLEUtility writeCharacteristic:self.p sUUID:@"90D0" cUUID:@"9002" data:completeData];
+                
+                sleep(2);
+                
+                cmd[0] = 0x03;
+                cmdData = [NSData dataWithBytes:cmd length:1];
+                completeData = [cmdData mutableCopy];
+                [completeData appendData:[self.passwordStr dataUsingEncoding:NSUTF8StringEncoding]];
+                [BLEUtility writeCharacteristic:self.p sUUID:@"90D0" cUUID:@"9002" data:completeData];
+            }
+        }
+    }
 }
 
 - (void)sendUpdate:(UInt8)r G:(UInt8)g B:(UInt8)b W:(UInt8)w {
@@ -217,7 +263,6 @@
             [d getBytes:b length:4];
             [sender setValue:((CGFloat)b[0]/255.0) animated:true];
             rgba[0][3] = b[0];
-            NSLog(@"did call 1: %d", b[0]);
         }
     }
 }
@@ -244,7 +289,6 @@
             [d getBytes:b length:4];
             [sender setValue:((CGFloat)b[0]/255.0) animated:true];
             rgba[1][3] = b[0];
-            NSLog(@"did call 2: %d", b[0]);
         }
     }
 }
@@ -271,7 +315,6 @@
             [d getBytes:b length:4];
             [sender setValue:((CGFloat)b[0]/255.0) animated:true];
             rgba[2][3] = b[0];
-            NSLog(@"did call 3: %d", b[0]);
         }
     }
 }
@@ -298,9 +341,26 @@
             [d getBytes:b length:4];
             [sender setValue:((CGFloat)b[0]/255.0) animated:true];
             rgba[3][3] = b[0];
-            NSLog(@"did call 4: %d", b[0]);
         }
     }
+}
+
+- (IBAction)setWiFiCredential:(UIButton *)sender {
+    NSLog(@"set credential!");
+    
+    self.ssidStr = self.ssid.text;
+    self.passwordStr = self.password.text;
+    self.setWIFI = 1;
+}
+
+- (IBAction)resetWiFi:(id)sender {
+    uint8_t cmd[1] = {0x04};
+    [BLEUtility writeCharacteristic:self.p sUUID:@"90D0" cUUID:@"9002" data:[NSData dataWithBytes:cmd length:1]];
+}
+
+- (IBAction)connectPeer:(id)sender {
+    uint8_t cmd[1] = {0x00};
+    [BLEUtility writeCharacteristic:self.p sUUID:@"90D0" cUUID:@"9002" data:[NSData dataWithBytes:cmd length:1]];
 }
 
 #pragma mark - FCColorPickerViewControllerDelegate Methods
@@ -373,6 +433,7 @@
 - (void)centralManager:(CBCentralManager *)central didDisconnectPeripheral:(CBPeripheral *)peripheral error:(NSError *)error
 {
     NSLog(@"Disconnected!");
+    self.iQoConnected = 0;
     [self.connStatus setText:@"Disconnected"];
     [central connectPeripheral:self.p options:nil];
 }
@@ -386,7 +447,7 @@
 {
     NSLog(@"connected");
     peripheral.delegate = self;
-    [peripheral discoverServices:@[[CBUUID UUIDWithString:@"2014"]]];
+    [peripheral discoverServices:@[[CBUUID UUIDWithString:@"2014"], [CBUUID UUIDWithString:@"90D0"]]];
 }
 
 #pragma mark - CBPeripheralDelegate
@@ -407,11 +468,11 @@
 - (void)peripheral:(CBPeripheral *)peripheral didDiscoverCharacteristicsForService:(CBService *)service error:(NSError *)error
 {
     if (!error) {
+        self.iQoConnected = 1;
         NSLog(@"didDiscoverCharacteristicsForService");
         for (CBCharacteristic *chr in service.characteristics) {
             NSLog(@"%@", chr.UUID);
             [self.connStatus setText:@"Connected"];
-            //[self sendUpdate:0 G:0 B:0 W:0];
         }
     } else {
         NSLog(@"discover char for service error");
@@ -431,6 +492,29 @@
     if (error) {
         NSLog(@"read char failed");
         NSLog(@"%@", error);
+    } else {
+        if ([[BLEUtility CBUUIDToString:characteristic.UUID] isEqualToString:@"9004"]) {
+            if ([characteristic.value length] > 1) {
+                NSString *s = @"IP Addr: ";
+                self.wifiStatus.text = [s stringByAppendingString:[[NSString alloc] initWithData:characteristic.value encoding:NSASCIIStringEncoding]];
+            } else {
+                if (((char *)[characteristic.value bytes])[0] == 0) {
+                    self.wifiStatus.text = @"Not started";
+                } else if (((char *)[characteristic.value bytes])[0] == 1) {
+                    self.wifiStatus.text = @"Standby";
+                }
+            }
+        } else if ([[BLEUtility CBUUIDToString:characteristic.UUID] isEqualToString:@"9005"]) {
+            if (((char *)[characteristic.value bytes])[0] == 0) {
+                self.peerStatus.text = @"Not connected";
+            } else if (((char *)[characteristic.value bytes])[0] == 1) {
+                self.peerStatus.text = @"Service discovered";
+            } else if (((char *)[characteristic.value bytes])[0] == 2) {
+                self.peerStatus.text = @"Service enabled";
+            } else if (((char *)[characteristic.value bytes])[0] == 3) {
+                self.peerStatus.text = @"Got ACC notify";
+            }
+        }
     }
 }
 
